@@ -1,0 +1,12 @@
+python-dotenv
+langchain
+langchain-community
+langchain-groq
+pypdf
+chromadb
+groq
+fastapi
+uvicorn
+pydantic
+langchain-google-genai
+langchain-chroma
