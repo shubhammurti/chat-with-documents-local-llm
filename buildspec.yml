@@ -1,0 +1,18 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      docker: 20
+  build:
+    commands:
+      - echo "Starting Docker build"
+      - docker build -t chat-app .
+      - docker save chat-app > chat-app.tar
+  post_build:
+    commands:
+      - echo "Build complete"
+artifacts:
+  files:
+    - chat-app.tar
+    - deploy.sh
