@@ -1,35 +1,52 @@
 version: 0.2
 
+env:
+  variables:
+    IMAGE_NAME: my-app
+    IMAGE_TAG: latest
+    EC2_HOST: ec2-user@13.126.45.138
+    EC2_KEY: /root/.ssh/my-key.pem
+
 phases:
   install:
     runtime-versions:
-      docker: 20
+      python: 3.11
     commands:
-      - echo Logging in to DockerHub using credentials from Parameter Store...
-      - echo "{{resolve:ssm-secure:/dockerhub/password}}" | docker login -u "{{resolve:ssm-secure:/dockerhub/username}}" --password-stdin
+      - echo Installing Docker and dependencies...
+      - apt-get update
+      - apt-get install -y docker.io python3-pip unzip
+      - pip install docker-compose
+      - echo Installing AWS CLI...
+      - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+      - unzip awscliv2.zip
+      - ./aws/install
+      - echo Installing jq...
+      - apt-get install -y jq
 
   pre_build:
     commands:
-      - echo Pre-build phase started
-      - docker --version
-      - |
-        if ! command -v docker-compose &> /dev/null
-        then
-          echo Installing docker-compose...
-          pip install docker-compose
-        else
-          echo docker-compose already installed
-        fi
+      - echo Logging in to DockerHub using credentials from SSM...
+      - DOCKER_USERNAME=$(aws ssm get-parameter --name "/dockerhub/username" --region ap-south-1 --with-decryption --query "Parameter.Value" --output text)
+      - DOCKER_PASSWORD=$(aws ssm get-parameter --name "/dockerhub/password" --region ap-south-1 --with-decryption --query "Parameter.Value" --output text)
+      - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
   build:
     commands:
-      - echo Building Docker image with docker-compose...
+      - echo Building Docker image...
       - docker-compose build
+      - echo Docker image built successfully
 
   post_build:
     commands:
-      - echo Build completed successfully!
+      - echo Preparing EC2 SSH access...
+      - mkdir -p ~/.ssh
+      - echo "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/my-key.pem
+      - chmod 400 ~/.ssh/my-key.pem
+      - echo Deploying to EC2 instance...
+      - scp -i ~/.ssh/my-key.pem docker-compose.yml $EC2_HOST:/home/ec2-user/
+      - ssh -i ~/.ssh/my-key.pem $EC2_HOST 'docker-compose down && docker-compose up -d'
+      - echo Deployment complete ✅
 
 artifacts:
   files:
-    - '**/*'
+    - docker-compose.yml
