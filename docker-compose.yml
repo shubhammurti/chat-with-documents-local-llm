@@ -1,144 +1,35 @@
-# docker-compose.yml
+version: 0.2
 
-services:
-  postgres:
-    image: postgres:15
-    container_name: chat_with_docs_postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+phases:
+  install:
+    runtime-versions:
+      docker: 20
+    commands:
+      - echo Logging in to DockerHub using credentials from Parameter Store...
+      - echo "{{resolve:ssm-secure:/dockerhub/password}}" | docker login -u "{{resolve:ssm-secure:/dockerhub/username}}" --password-stdin
 
-  minio:
-    image: minio/minio:latest
-    container_name: chat_with_docs_minio
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    ports:
-      - "9000:9000" 
-      - "9001:9001" 
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  pre_build:
+    commands:
+      - echo Pre-build phase started
+      - docker --version
+      - |
+        if ! command -v docker-compose &> /dev/null
+        then
+          echo Installing docker-compose...
+          pip install docker-compose
+        else
+          echo docker-compose already installed
+        fi
 
-  redis:
-    image: redis:7-alpine
-    container_name: chat_with_docs_redis
+  build:
+    commands:
+      - echo Building Docker image with docker-compose...
+      - docker-compose build
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: chat_with_docs_ollama
-    volumes:
-      - ollama_data:/root/.ollama
-      - ./start-ollama.sh:/start-ollama.sh
-    entrypoint: /start-ollama.sh
-    ports:
-      - "11434:11434"
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list || exit 1"]
-      interval: 30s
-      timeout: 20s
-      retries: 5
-      start_period: 600s
+  post_build:
+    commands:
+      - echo Build completed successfully!
 
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: chat_with_docs_api
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./app:/app/app
-      - chroma_data:/app/chroma_data
-    command: >
-      sh -c "
-        echo 'Waiting for PostgreSQL...'
-        while ! nc -z postgres 5432; do sleep 1; done;
-        echo 'PostgreSQL started.'
-
-        echo 'Waiting for Ollama...'
-        while ! nc -z ollama 11434; do sleep 1; done;
-        echo 'Ollama started.'
-        
-        uvicorn app.main:app --host 0.0.0.0 --port 8000
-      "
-    env_file:
-      - .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      redis: 
-        condition: service_started
-      ollama:
-        condition: service_healthy
-    environment:
-      - POSTGRES_SERVER=postgres
-      - OLLAMA_HOST=http://ollama:11434
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "8000"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-
-  celery_worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: chat_with_docs_celery
-    command: celery -A app.tasks.celery_app worker --loglevel=info
-    volumes:
-      - ./app:/app/app
-      - chroma_data:/app/chroma_data
-    env_file:
-      - .env
-    depends_on:
-      api:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      ollama:
-        condition: service_healthy
-    environment:
-      - POSTGRES_SERVER=postgres
-      - OLLAMA_HOST=http://ollama:11434
-
-  frontend:
-    build:
-      context: ./frontend
-    container_name: chat_with_docs_frontend
-    ports:
-      - "80:8501"
-    volumes:
-      - ./frontend:/app 
-    env_file:
-      - .env
-    environment:
-      - API_URL=http://api:8000/api/v1
-    depends_on:
-      api:
-        condition: service_healthy
-
-volumes:
-  postgres_data:
-  minio_data:
-  chroma_data:
-  ollama_data: {}
+artifacts:
+  files:
+    - '**/*'
