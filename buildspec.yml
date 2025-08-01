@@ -2,10 +2,10 @@ version: 0.2
 
 env:
   variables:
-    IMAGE_NAME: my-app
+    IMAGE_NAME: chat-with-docs
     IMAGE_TAG: latest
     EC2_HOST: ec2-user@13.126.45.138
-    EC2_KEY: /root/.ssh/my-key.pem
+    EC2_KEY_NAME: /docker/ec2-key-pem  # SSM Parameter name of your .pem content
 
 phases:
   install:
@@ -30,22 +30,23 @@ phases:
       - DOCKER_PASSWORD=$(aws ssm get-parameter --name "/dockerhub/password" --region ap-south-1 --with-decryption --query "Parameter.Value" --output text)
       - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
+      - echo Fetching EC2 SSH Private Key from SSM...
+      - EC2_SSH_PRIVATE_KEY=$(aws ssm get-parameter --name "$EC2_KEY_NAME" --with-decryption --region ap-south-1 --query "Parameter.Value" --output text)
+
   build:
     commands:
-      - echo Building Docker image...
+      - echo Building Docker images...
       - docker-compose build
-      - echo Docker image built successfully
 
   post_build:
     commands:
-      - echo Preparing EC2 SSH access...
-      - mkdir -p ~/.ssh
-      - echo "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/my-key.pem
-      - chmod 400 ~/.ssh/my-key.pem
       - echo Deploying to EC2 instance...
-      - scp -i ~/.ssh/my-key.pem docker-compose.yml $EC2_HOST:/home/ec2-user/
-      - ssh -i ~/.ssh/my-key.pem $EC2_HOST 'docker-compose down && docker-compose up -d'
-      - echo Deployment complete ✅
+      - mkdir -p ~/.ssh
+      - echo "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/ec2-key.pem
+      - chmod 400 ~/.ssh/ec2-key.pem
+      - scp -i ~/.ssh/ec2-key.pem docker-compose.yml $EC2_HOST:/home/ec2-user/
+      - ssh -i ~/.ssh/ec2-key.pem $EC2_HOST 'docker-compose down || true && docker-compose up -d'
+      - echo ✅ Deployment complete
 
 artifacts:
   files:
