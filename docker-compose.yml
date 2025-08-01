@@ -1,52 +1,144 @@
-version: 0.2
+# docker-compose.yml
 
-env:
-  variables:
-    IMAGE_NAME: my-app
-    IMAGE_TAG: latest
-    EC2_HOST: ec2-user@13.126.45.138
-    EC2_KEY: /root/.ssh/my-key.pem
+services:
+  postgres:
+    image: postgres:15
+    container_name: chat_with_docs_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-phases:
-  install:
-    runtime-versions:
-      python: 3.11
-    commands:
-      - echo Installing Docker and dependencies...
-      - apt-get update
-      - apt-get install -y docker.io python3-pip unzip
-      - pip install docker-compose
-      - echo Installing AWS CLI...
-      - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-      - unzip awscliv2.zip
-      - ./aws/install
-      - echo Installing jq...
-      - apt-get install -y jq
+  minio:
+    image: minio/minio:latest
+    container_name: chat_with_docs_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000" 
+      - "9001:9001" 
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  pre_build:
-    commands:
-      - echo Logging in to DockerHub using credentials from SSM...
-      - DOCKER_USERNAME=$(aws ssm get-parameter --name "/dockerhub/username" --region ap-south-1 --with-decryption --query "Parameter.Value" --output text)
-      - DOCKER_PASSWORD=$(aws ssm get-parameter --name "/dockerhub/password" --region ap-south-1 --with-decryption --query "Parameter.Value" --output text)
-      - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+  redis:
+    image: redis:7-alpine
+    container_name: chat_with_docs_redis
 
-  build:
-    commands:
-      - echo Building Docker image...
-      - docker-compose build
-      - echo Docker image built successfully
+  ollama:
+    image: ollama/ollama:latest
+    container_name: chat_with_docs_ollama
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./start-ollama.sh:/start-ollama.sh
+    entrypoint: /start-ollama.sh
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 600s
 
-  post_build:
-    commands:
-      - echo Preparing EC2 SSH access...
-      - mkdir -p ~/.ssh
-      - echo "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/my-key.pem
-      - chmod 400 ~/.ssh/my-key.pem
-      - echo Deploying to EC2 instance...
-      - scp -i ~/.ssh/my-key.pem docker-compose.yml $EC2_HOST:/home/ec2-user/
-      - ssh -i ~/.ssh/my-key.pem $EC2_HOST 'docker-compose down && docker-compose up -d'
-      - echo Deployment complete ✅
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat_with_docs_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+      - chroma_data:/app/chroma_data
+    command: >
+      sh -c "
+        echo 'Waiting for PostgreSQL...'
+        while ! nc -z postgres 5432; do sleep 1; done;
+        echo 'PostgreSQL started.'
 
-artifacts:
-  files:
-    - docker-compose.yml
+        echo 'Waiting for Ollama...'
+        while ! nc -z ollama 11434; do sleep 1; done;
+        echo 'Ollama started.'
+        
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis: 
+        condition: service_started
+      ollama:
+        condition: service_healthy
+    environment:
+      - POSTGRES_SERVER=postgres
+      - OLLAMA_HOST=http://ollama:11434
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat_with_docs_celery
+    command: celery -A app.tasks.celery_app worker --loglevel=info
+    volumes:
+      - ./app:/app/app
+      - chroma_data:/app/chroma_data
+    env_file:
+      - .env
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      ollama:
+        condition: service_healthy
+    environment:
+      - POSTGRES_SERVER=postgres
+      - OLLAMA_HOST=http://ollama:11434
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: chat_with_docs_frontend
+    ports:
+      - "80:8501"
+    volumes:
+      - ./frontend:/app 
+    env_file:
+      - .env
+    environment:
+      - API_URL=http://api:8000/api/v1
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  minio_data:
+  chroma_data:
+  ollama_data: {}
