@@ -14,12 +14,16 @@ phases:
     commands:
       - echo Installing Docker and dependencies...
       - apt-get update
-      - apt-get install -y docker.io python3-pip unzip
-      - pip install docker-compose
+      - apt-get install -y docker.io docker-compose-plugin python3-pip unzip
+
+      - echo Verifying Docker Compose version...
+      - docker compose version
+
       - echo Installing AWS CLI...
       - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
       - unzip awscliv2.zip
       - ./aws/install
+
       - echo Installing jq...
       - apt-get install -y jq
 
@@ -35,8 +39,8 @@ phases:
 
   build:
     commands:
-      - echo Building Docker images...
-      - docker-compose build
+      - echo Building Docker images using Docker Compose...
+      - docker compose build
 
   post_build:
     commands:
@@ -45,7 +49,7 @@ phases:
       - echo "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/ec2-key.pem
       - chmod 400 ~/.ssh/ec2-key.pem
       - scp -i ~/.ssh/ec2-key.pem docker-compose.yml $EC2_HOST:/home/ec2-user/
-      - ssh -i ~/.ssh/ec2-key.pem $EC2_HOST 'docker-compose down || true && docker-compose up -d'
+      - ssh -i ~/.ssh/ec2-key.pem $EC2_HOST 'docker compose down || true && docker compose up -d'
       - echo ✅ Deployment complete
 
 artifacts:
